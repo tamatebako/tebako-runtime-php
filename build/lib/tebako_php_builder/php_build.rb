@@ -91,12 +91,14 @@ module TebakoPhpBuilder
     attr_reader :src_dir, :stage_dir
 
     def run
-      extract
-      configure
-      substitute_makefile
-      write_fs_tu
-      make
-      install
+      TebakoPhpBuilder::BuildHelpers.with_env(floor_env) do
+        extract
+        configure
+        substitute_makefile
+        write_fs_tu
+        make
+        install
+      end
       self
     end
 
@@ -245,12 +247,11 @@ module TebakoPhpBuilder
     # digest-pinned container), so configure's own -g -O2 default applies
     # and musl carries pthread in libc — nothing to pin.
     def configure_env
-      env = if @platform.linux_gnu?
-              { "CFLAGS" => "-O2 -pthread", "LDFLAGS" => "-pthread" }
-            else
-              {}
-            end
-      env.merge(floor_env)
+      if @platform.linux_gnu?
+        { "CFLAGS" => "-O2 -pthread", "LDFLAGS" => "-pthread" }
+      else
+        {}
+      end
     end
 
     # The macOS support floor rides the WHOLE build as
