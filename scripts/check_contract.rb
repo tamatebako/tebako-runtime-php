@@ -46,6 +46,7 @@
 # representation proves nothing).
 
 require "bundler/setup"
+require "fileutils"
 require "json_schemer"
 require "pathname"
 require "yaml"
@@ -94,6 +95,26 @@ class ContractCheck
   def contract_version
     data = YAML.load_file(@contract_yml)
     data.is_a?(Hash) ? data["contract_version"] : nil
+  end
+
+  # The fetch half of the parity arm, split out for the dedicated CI fetch
+  # job: resolves the pinned driver source (read_url's bounded retry rides
+  # along), refuses a body that carries no compiled-in constant (a 200
+  # error page would otherwise poison every consuming gate with a
+  # misleading mismatch), and writes it to dest. Returns the origin for
+  # the log line.
+  def fetch_driver_source(dest)
+    body, origin = driver_source
+    unless body.match(RUST_PATTERN)
+      raise TebakoPhpBuilder::Error.new(
+        "#{origin} carries no `pub const TEBAKO_CONTRACT_VERSION: u32 = N;` — " \
+        "the fetched body is not the driver's lib.rs; refusing to hand it to the parity gate", 1
+      )
+    end
+
+    FileUtils.mkdir_p(File.dirname(dest))
+    File.binwrite(dest, body)
+    origin
   end
 
   private
@@ -189,7 +210,19 @@ if $PROGRAM_NAME == __FILE__
 
   begin
     check = ContractCheck.new
-    if check.valid?
+    if ARGV[0] == "--fetch-parity"
+      # The dedicated fetch job's mode: resolve the pinned driver source
+      # once per workflow call and write it for the artifact handoff — the
+      # per-platform gates then read the artifact, never the network
+      # (tebako-runtime-python#4's de-flake).
+      dest = ARGV[1].to_s
+      if dest.empty?
+        report.call("usage: scripts/check_contract.rb --fetch-parity <dest>")
+        exit 1
+      end
+      origin = check.fetch_driver_source(dest)
+      puts "fetched #{origin} -> #{dest} (#{File.size(dest)} bytes)"
+    elsif check.valid?
       puts "contract version #{check.contract_version}: contract.yml validates against schema/contract.schema.yml, " \
            "the catalog matches versions.yml's source pins, and the consumed driver's compiled-in " \
            "TEBAKO_CONTRACT_VERSION agrees"

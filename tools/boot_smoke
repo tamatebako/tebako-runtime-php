@@ -29,7 +29,8 @@
 # Boot smoke for a built tebako php runtime (tebako-runtime-python's
 # boot_smoke role — stdlib-only, no rspec surface): boots the built exe
 # against its sibling env image and asserts the driver contract end to
-# end. Scenarios (POSIX; the skeleton's only lane):
+# end. Scenarios (POSIX — the windows materialize-tier set arrives with
+# the windows leg):
 #
 #   bare                 no image: the driver NAMES the bare boot on
 #                        stderr (TEBAKO_RUNTIME_IMAGE is not set). Unlike
@@ -50,6 +51,36 @@
 #                        IN-IMAGE path — the driver joins it with the
 #                        declared mount): a json-encoding script runs
 #                        from the mounted payload
+#   compute-floor        the boot probes are blind to a slow BUILD
+#                        (tebako-runtime-python#79's lesson: a leg that
+#                        computes at a fraction of the matrix's rate
+#                        ships green under a boot-only gate): the pair
+#                        runs a fixed pure-compute loop (fib(35), no I/O
+#                        in the loop) timed INSIDE the interpreter
+#                        (hrtime per run, best of three — boot/mount
+#                        cost and one-off scheduling noise are excluded),
+#                        and the best run must land under a generous
+#                        ceiling. The ceiling is a regression tripwire,
+#                        never a benchmark. The flags arm is fail-closed
+#                        in every mode: php records no CFLAGS at runtime
+#                        (unlike CPython's sysconfig), so the arm reads
+#                        the build's own record — the sibling
+#                        .contract.yaml's built_from.cflags (written from
+#                        the generated Makefile's CFLAGS_CLEAN —
+#                        PhpBuild#recorded_cflags, itself gated at
+#                        configure time) — plus the interpreter's own
+#                        php -i rows (Debug Build must be "no", the
+#                        Configure Command must be the factory's recipe).
+#                        A mis-flagged build is a recipe bug, never the
+#                        slow-silicon defect class. Modes
+#                        (COMPUTE_FLOOR_MODE): "fail" (the default)
+#                        trips the leg; "warn" — armed by the workflow on
+#                        the macos-x86_64 leg ALONE, where the link-unit
+#                        line carries the LIVE ~3x slow-compute defect on
+#                        real Intel silicon (tebako#1095, still open) —
+#                        prints a ::warning:: and keeps the leg green.
+#                        REMOVAL CONDITION: that leg reverts to
+#                        fail-closed when tebako#1095 closes.      [all]
 #   bad-mount            --tebako-image <missing>:-:/nope -> exit 69
 #                        (the unavailable image, named on stderr)
 #   mount-root-override  TEBAKO_MOUNT_ROOT=<abs>: boots, the layout card
@@ -60,8 +91,8 @@
 #
 # Usage:
 #   tools/boot_smoke [--runtime-root DIR | --exe PATH] [--tfs PATH]
-#                    [--scenario all|bare|boot|payload|bad-mount|
-#                                mount-root-override|
+#                    [--scenario all|bare|boot|payload|compute-floor|
+#                                bad-mount|mount-root-override|
 #                                mount-root-malformed|override-ungranted]
 #
 # Exit codes: 0 green · 141 usage/resolution · 143 a scenario failed.
@@ -78,6 +109,15 @@ $LOAD_PATH.unshift(File.join(REPO_ROOT, "build", "lib"))
 require "tebako_php_builder"
 
 BOOT_TIMEOUT = 60
+# The compute-floor scenario (the header's tebako-runtime-python#79
+# block): fib(COMPUTE_FIB_N) inner-timed, best of COMPUTE_FIB_RUNS. The
+# ceiling carries several-x headroom over the healthy matrix's measured
+# legs (an -O2 php leg measures ~0.3-0.9 s native; the unoptimized
+# env-clobber class lands ~2-3x that, and tebako#1095's live macos-
+# x86_64 link-unit tax is ~3x) — a tripwire, never a benchmark bound.
+COMPUTE_FIB_N = 35
+COMPUTE_FIB_RUNS = 3
+COMPUTE_FLOOR_SECONDS = 4.0
 IMAGE_SUFFIXES = %w[.tfs .dwarfs].freeze
 MARKER_SUFFIXES = %w[.abi .sha256 .origin .yaml .dll].freeze
 NON_EXECUTABLE_SUFFIXES = (IMAGE_SUFFIXES + MARKER_SUFFIXES).freeze
@@ -93,6 +133,20 @@ BOOT_PLATFORM = TebakoPhpBuilder::Platform.new
 def usage_error(message)
   warn "boot_smoke: #{message}"
   exit 141
+end
+
+# The compute-floor scenario's mode (its header block): "fail" — the
+# default, and every leg's shape but one — trips the leg on a breached
+# floor; "warn" prints the measurement + a workflow-command ::warning::
+# and keeps the leg green. The workflow arms "warn" on the macos-x86_64
+# leg ALONE: the live tebako#1095 slow-compute defect (the product
+# repo's, in the link-unit line this factory pins) would otherwise red
+# that leg until the fix ships. REMOVAL CONDITION: the leg reverts to
+# fail-closed when tebako#1095 closes. Any other value is a named error,
+# never a silent fallback.
+COMPUTE_FLOOR_MODE = ENV.fetch("COMPUTE_FLOOR_MODE", "fail")
+unless %w[fail warn].include?(COMPUTE_FLOOR_MODE)
+  usage_error("COMPUTE_FLOOR_MODE=#{COMPUTE_FLOOR_MODE.inspect} — known: fail (the default), warn")
 end
 
 options = { runtime_root: ENV.fetch("TEBAKO_RUNTIME_ROOT", nil), exe: nil, tfs: nil, scenario: "all" }
@@ -238,7 +292,7 @@ def ungranted_fixture(tfs, dir, platform)
   image
 end
 
-KNOWN_SCENARIOS = %w[bare boot payload bad-mount mount-root-override
+KNOWN_SCENARIOS = %w[bare boot payload compute-floor bad-mount mount-root-override
                      mount-root-malformed override-ungranted].freeze
 # Scenarios that build images with the tfs CLI.
 TFS_SCENARIOS = %w[payload override-ungranted].freeze
@@ -295,6 +349,79 @@ def run_scenarios(executable, platform, selected, tfs:)
               "stdout: #{out}\nstderr: #{err}")
         check("payload: json encodes (the static extension set)", out.include?('json: {"ok":true}'),
               "stdout: #{out}\nstderr: #{err}")
+      when "compute-floor"
+        unless File.file?(image)
+          check("compute-floor", false, "no sibling env image #{image}")
+          next
+        end
+        # The flags arm (the header block): fail-closed in every mode.
+        # php records no CFLAGS at runtime, so the -O axis reads the
+        # build's own record — the sibling .contract.yaml's
+        # built_from.cflags (PhpBuild#recorded_cflags wrote it from the
+        # generated Makefile, and gated it at configure time); the debug
+        # axis and the recipe shape read the interpreter's own php -i.
+        out, err, st = boot(executable, ["-i"], { "TEBAKO_RUNTIME_IMAGE" => image })
+        expect_ok("compute-floor: php -i answers off the pair", out, err, st, "Configure Command")
+        info = out.delete("\r")
+        check("compute-floor: not a debug build (php -i)",
+              info.match?(/^Debug Build => no$/),
+              "stdout's Debug Build row: #{info[/^Debug Build => .*$/]}")
+        check("compute-floor: the configure line is the factory's recipe",
+              info.include?("--disable-all") && info.include?("--enable-cli") && !info.include?("--enable-debug"),
+              "stdout's Configure Command row: #{info[/^Configure Command => .*$/]}")
+        card_path = "#{executable.sub(/\.exe\z/, "")}.contract.yaml"
+        cflags = begin
+          YAML.load_file(card_path).dig("built_from", "cflags").to_s
+        rescue Errno::ENOENT, Psych::Exception
+          ""
+        end
+        check("compute-floor: the build record pins -O2/-O3 (no -O0/-O1/-Og/-Od)",
+              !cflags.empty? && (cflags.split & %w[-O0 -O1 -Og -Od]).empty? &&
+                cflags.split.grep(/\A-O[23]\z/).any?,
+              "#{card_path} records cflags #{cflags.empty? ? '(none — the card is missing or predates the cflags key)' : cflags.inspect} " \
+              "— a mis-flagged build ships a slow interpreter green under a boot-only gate " \
+              "(tebako-runtime-python#79's class)")
+        # The timing arm: fib(35) — the covenant's steady.cpu shape, no
+        # I/O in the loop — timed INSIDE the interpreter (hrtime around
+        # each run): the boot/mount cost and the harness never enter the
+        # measurement, and best-of-N drops one-off scheduling noise.
+        compute_probe = <<~PHP
+          function fib($n){return $n<2?$n:fib($n-1)+fib($n-2);}
+          $runs = [];
+          for ($i = 0; $i < #{COMPUTE_FIB_RUNS}; $i++) {
+              $t0 = hrtime(true);
+              fib(#{COMPUTE_FIB_N});
+              $runs[] = (hrtime(true) - $t0) / 1e9;
+          }
+          echo "COMPUTE-FLOOR\n";
+          echo "runs: ", implode(" ", array_map(fn($r) => sprintf("%.3f", $r), $runs)), "\n";
+          echo "best: ", sprintf("%.3f", min($runs)), "\n";
+        PHP
+        out, err, st = boot(executable, ["-r", compute_probe], { "TEBAKO_RUNTIME_IMAGE" => image })
+        expect_ok("compute-floor", out, err, st, "COMPUTE-FLOOR")
+        out = out.delete("\r")
+        puts "     compute-floor: fib(#{COMPUTE_FIB_N}) #{out[/^runs: (.+)$/, 1]}"
+        best = out[/^best: (\d+(?:\.\d+)?)$/, 1]&.to_f
+        floor = "compute-floor: fib(#{COMPUTE_FIB_N}) best-of-#{COMPUTE_FIB_RUNS} under #{COMPUTE_FLOOR_SECONDS}s"
+        detail = "measured best #{best.inspect}s (runs in the log above) — a leg computing at a fraction " \
+                 "of the matrix's rate is a slow BUILD, never a publishable artifact " \
+                 "(tebako-runtime-python#79's lesson)\nstdout: #{out}\nstderr: #{err}"
+        if best.nil? || best > COMPUTE_FLOOR_SECONDS
+          if COMPUTE_FLOOR_MODE == "warn"
+            # The warn tier (the header block + the mode comment): the
+            # defect is LIVE on this leg's class, the root cause is the
+            # product repo's — the measurement and a workflow-command
+            # warning carry it, the leg stays green.
+            puts "::warning title=compute-floor::fib(#{COMPUTE_FIB_N}) best #{best.inspect}s past the " \
+                 "#{COMPUTE_FLOOR_SECONDS}s tripwire — the live tebako#1095 slow-compute defect on real " \
+                 "Intel silicon; this leg rides warn-only until tebako#1095 closes"
+            puts "warn #{floor}: #{detail}"
+          else
+            check(floor, false, detail)
+          end
+        else
+          check(floor, true, detail)
+        end
       when "bad-mount"
         missing = File.join(dir, "no-such-image.tfs")
         out, err, st = boot(executable,

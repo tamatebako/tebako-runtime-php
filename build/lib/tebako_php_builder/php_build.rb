@@ -74,7 +74,7 @@ module TebakoPhpBuilder
     ].freeze
 
     def initialize(platform:, php_version:, prefix:, tarball:, src_sha256:, # rubocop:disable Metrics/ParameterLists,Metrics/MethodLength
-                   link_unit:, link_unit_dir:, repo_root:, jobs: nil)
+                   link_unit:, link_unit_dir:, repo_root:, jobs: nil, macos_deployment_target: nil)
       @platform = platform
       @php_version = php_version
       @php = TebakoPhpBuilder::PhpVersion.new(php_version)
@@ -85,6 +85,7 @@ module TebakoPhpBuilder
       @link_unit_dir = link_unit_dir
       @repo_root = repo_root
       @jobs = jobs
+      @macos_deployment_target = macos_deployment_target
     end
 
     attr_reader :src_dir, :stage_dir
@@ -124,6 +125,30 @@ module TebakoPhpBuilder
         end
         match[1]
       end
+    end
+
+    # The compile flags the build ACTUALLY runs with, read back from the
+    # generated Makefile's CFLAGS_CLEAN (the recipe's own record — the
+    # contract card's built_from.cflags; available post-configure). The
+    # read-back doubles as the build-side gate against the env-clobber
+    # class (configure_env's comment): a Makefile whose compile flags
+    # carry no -O option fails the build here, never at the boot smoke.
+    # Public: Builder folds it into the package's .contract.yaml card.
+    def recorded_cflags
+      line = File.read(File.join(src_dir, "Makefile"))[/^CFLAGS_CLEAN = (.*)$/, 1]
+      unless line
+        raise TebakoPhpBuilder::Error.new(
+          "no CFLAGS_CLEAN line in the generated Makefile — this php's build grammar drifted", 103
+        )
+      end
+      if (line.split & %w[-O0 -O1 -Og -Od]).any? || line.split.grep(/\A-O[23]\z/).empty?
+        raise TebakoPhpBuilder::Error.new(
+          "the generated Makefile compiles php with no -O2/-O3 (CFLAGS_CLEAN=#{line.inspect}) — " \
+          "a slow build ships green under a boot-only gate (the env-clobber class, " \
+          "tebako-runtime-python#79); configure_env pins the flags", 103
+        )
+      end
+      line
     end
 
     private
@@ -186,29 +211,68 @@ module TebakoPhpBuilder
     # the runtime VFS path). The extension policy is CONFIGURE_ARGS (the
     # class comment); NTS (non-ZTS) is the default and stays.
     def configure
-      unless @platform.linux?
+      if @platform.msys?
         raise TebakoPhpBuilder::Error.new(
-          "the skeleton builds linux legs only (#{@platform.ostype} arrived here) — " \
-          "macos/windows arrive with their legs", 103
+          "the windows legs arrive with the spec 17 §7 materialize tier — " \
+          "this factory builds POSIX legs only today", 103
         )
       end
 
       args = ["./configure", "--prefix=#{@platform.mount_root}"] + CONFIGURE_ARGS
       puts "-- Configuring php #{@php_version} (#{@platform.host_id})"
       TebakoPhpBuilder::BuildHelpers.run_with_capture(args, env: configure_env, chdir: src_dir)
+      puts "   ... compile flags (CFLAGS_CLEAN): #{recorded_cflags}"
     rescue TebakoPhpBuilder::Error => e
-      raise e if e.error_code == 103 && e.message.include?("skeleton")
+      raise e if e.error_code == 103 && e.message.include?("POSIX")
 
       raise TebakoPhpBuilder::Error.new("'build_runtime' configure step failed: #{e.message}", 103)
     end
 
-    # linux-gnu: the python factory's lesson — the tpkg-builder images
-    # export CFLAGS=-pthread, so configure's run-probe reports pthreads
-    # "available without options" and no link-side thread flag lands in
-    # the generated rules; glibc < 2.34 keeps pthread_create/sem_init in
-    # libpthread. LDFLAGS=-pthread flows into BUILD_CLI's link recipe.
+    # linux-gnu: the python factory's lesson, one layer deeper for php —
+    # the tpkg-builder gnu images export CFLAGS=-pthread, and under
+    # autoconf an env-set CFLAGS REPLACES configure's -g -O2 default
+    # outright (CPython is immune: its OPT carries the -O3 separately;
+    # php's CFLAGS_CLEAN derives from the env value alone). So an
+    # unpinned php build on the gnu container compiles UNOPTIMIZED — the
+    # tebako-runtime-python#79 slow-build class, green under every
+    # boot-only gate. CFLAGS=-O2 -pthread keeps the image's thread flag
+    # and restores the optimization the default would have had (the
+    # boot smoke's compute-floor tripwire pins the outcome). The
+    # link-side -pthread: the link recipe never sees CFLAGS, and the
+    # closure's Rust objects reference pthread_create/sem_init, which
+    # glibc < 2.34 keeps in libpthread.
+    # linux-musl: the musl image exports no CFLAGS (verified against the
+    # digest-pinned container), so configure's own -g -O2 default applies
+    # and musl carries pthread in libc — nothing to pin.
     def configure_env
-      { "LDFLAGS" => "-pthread" }
+      env = if @platform.linux_gnu?
+              { "CFLAGS" => "-O2 -pthread", "LDFLAGS" => "-pthread" }
+            else
+              {}
+            end
+      env.merge(floor_env)
+    end
+
+    # The macOS support floor rides the WHOLE build as
+    # MACOSX_DEPLOYMENT_TARGET — configure's probes compile+link, and the
+    # exe's final link (inside make) is what clang stamps as
+    # LC_BUILD_VERSION minos. Unpinned, the stamp floats with the build
+    # host's OS (tebako-runtime-python#81: the Intel runtime refused to
+    # load on macOS 14). The pin is contract.yml's
+    # macos_deployment_target, a product decision, and the provenance
+    # gate asserts the recorded minos equals it. Off-macOS the env is
+    # empty and merges as a no-op.
+    def floor_env
+      return {} unless @platform.macos?
+
+      floor = @macos_deployment_target.to_s
+      if floor.empty?
+        raise TebakoPhpBuilder::Error.new(
+          "no macos_deployment_target pin (contract.yml) — the macOS support floor is a product decision, " \
+          "never the runner image's accident (tebako-runtime-python#81)", 64
+        )
+      end
+      { "MACOSX_DEPLOYMENT_TARGET" => floor }
     end
 
     # The build-time substitutions on the generated Makefile. Every

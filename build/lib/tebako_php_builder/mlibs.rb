@@ -37,13 +37,15 @@ module TebakoPhpBuilder
   # preferred over the closure's (python's covered_basenames drops the
   # closure's libssl/libcrypto/libz so its _ssl/zlib modules and the
   # closure share ONE copy; php has no second consumer, so the closure
-  # rides COMPLETE). The static C++/gcc runtime tail and the libc-family
-  # statics (rt/util, proven safe by the ruby factory) follow the group;
-  # the rest of libc stays dynamic (always present on a glibc/musl host).
-  #
-  # darwin/msys link shapes arrive with their legs (the skeleton builds
-  # linux-gnu only); a non-ELF platform is a named error here, never a
-  # wrong link line.
+  # rides COMPLETE). ELF legs wrap the tebako set in
+  # -Wl,--start-group/--end-group (the dwarfs/codec archives have
+  # circular member-level references); the static C++/gcc runtime tail
+  # and the libc-family statics (rt/util, proven safe by the ruby
+  # factory) follow the group; the rest of libc stays dynamic (always
+  # present on a glibc/musl host). darwin links the full set by full path
+  # under ld_classic (below). msys arrives with the windows leg — a
+  # platform with no link shape here is a named error, never a wrong
+  # link line.
   class Mlibs
     def initialize(platform:, link_unit:, link_unit_dir:)
       @platform = platform
@@ -53,14 +55,15 @@ module TebakoPhpBuilder
 
     # The $(TEBAKO_LIBS) value substituted into the generated Makefile.
     def tebako_libs
-      unless @platform.linux?
+      if @platform.macos?
+        darwin_libs
+      elsif @platform.linux?
+        elf_libs
+      else
         raise TebakoPhpBuilder::Error.new(
-          "no tebako link line for #{@platform.ostype} yet — the skeleton ships the ELF (linux) " \
-          "shape only; macos/msys arrive with their legs", 112
+          "no tebako link line for #{@platform.ostype} yet — msys arrives with the windows leg", 112
         )
       end
-
-      elf_libs
     end
 
     private
@@ -74,6 +77,28 @@ module TebakoPhpBuilder
       tail = %w[-static-libgcc -l:libstdc++.a -lgcc_eh]
       tail += @platform.musl? ? %w[-ldl -lpthread] : %w[-l:librt.a -l:libutil.a -ldl -lpthread]
       (["-Wl,--start-group"] + @link_unit.libraries(@link_unit_dir) + ["-Wl,--end-group"] + tail).join(" ")
+    end
+
+    # darwin: the full set by full path under ld_classic — Apple ld
+    # implements neither -l:<file> nor --start-group, and ld_classic
+    # resolves the cargo-bundled vague-linkage duplicates by the ODR rule
+    # (tebako-runtime-ruby's Xcode 15 lesson; tebako-runtime-python's
+    # darwin_libs is the proven shape). The closure rides COMPLETE (php's
+    # extension set binds no platform openssl/zlib of its own — the
+    # class comment's no-second-consumer rule).
+    # Security.framework: the v2.8.4+ unit's driver embeds the trust
+    # bridge's OS-store enumeration (rustls-native-certs →
+    # security-framework objects) — its kSec*/_Sec*/_CMS* references
+    # resolve only against the system Security framework.
+    # CoreFoundation.framework: the same driver's core_foundation /
+    # rustls_platform_verifier objects reference _CFURL*/_CFUUID*/
+    # _kCF* symbols — ruby's and python's OWN configure lines already
+    # pull CoreFoundation on darwin, so their mlibs never names it;
+    # php's does not, so this factory's line must (the first local macOS
+    # link died on exactly this undefined set).
+    def darwin_libs
+      (["-Wl,-ld_classic"] + @link_unit.libraries(@link_unit_dir) +
+       %w[-framework CoreFoundation -framework Security -lc++ -lc++abi]).join(" ")
     end
   end
 end

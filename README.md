@@ -13,21 +13,27 @@ spelling, with **no era gate**: this factory was born after the lang-ful
 spelling landed (the node factory's rationale), so no immutable
 lang-less line exists to stay compatible with.
 
-**Status: pre-release skeleton.** The chain — fetch/verify →
-configure/make → driver link → env-image pack → packaging → provenance
-gate → boot smoke — is implemented in `build/lib/tebako_php_builder/`
-and wired into one CI leg (`build-linux-gnu.yml`: linux-gnu x86_64).
-What works: the linux-gnu-x86_64 leg builds php 8.4.28 from the pinned
-php.net tarball, links the spec-17 driver from the pinned link unit
-(`contract.yml`'s `link_unit_release`), packs the env image with the
-pinned `tfs mkimage` (the limnifs writer), and proves the pair with the
-boot smoke (bare/boot/payload/bad-mount/mount-root-override/
-mount-root-malformed/override-ungranted). What is missing, each its own
-increment: the publish pipeline (release adapter, signing, registry
-render), the second platform leg (linux-musl / macos / windows), the
-extension breadth + composer lane (the census's payload scenarios),
-the hello-runtimes arm, the php.net release monitor, and the
-boot-contract parity `spec/` suite.
+**Status: pre-release.** The chain — fetch/verify → configure/make →
+driver link → env-image pack → packaging → provenance gate → boot smoke
+— is implemented in `build/lib/tebako_php_builder/` and wired into three
+platform workflows (`build-linux-gnu.yml`, `build-linux-musl.yml`,
+`build-macos.yml` — thin triggers over `_build-platform.yml`), covering
+linux-gnu x86_64, linux-musl x86_64 + arm64 (digest-pinned tpkg-builder
+containers), and macos x86_64 + arm64 (runner-native, with the spec 31
+sign+notarize arm gated on `APPLE_SIGNING_ENABLED`). The boot smoke
+carries the compute-floor scenario (php `-i` flags + the contract card's
+recorded CFLAGS + a fib(35) timing tripwire — tebako-runtime-python#79's
+port, warn-tiered on macos x86_64 while tebako#1095 is live). The publish
+pipeline is present and dispatch-proven — `publish.yml` (the python
+factory's coordinator port: per-leg publish+sign via the tebako-release
+gem, SLSA attest, `.manifest.json` shards, registry render) — but **no
+release has been cut**: every increment stays draft-PR-only until the
+whole chain is green end-to-end (the owner's rule). What is missing,
+each its own increment: the first real release, the windows leg (needs
+the spec 17 §7 materialize tier branches in the fs TU), the extension
+breadth + composer lane (the census's payload scenarios), the
+hello-runtimes arm, the php.net release monitor, and the boot-contract
+parity `spec/` suite.
 
 ## The driver is linked into the interpreter, not wrapped
 
@@ -156,8 +162,9 @@ The exe ships **unstripped**: the symbol table is the
 symbol-provenance gate's evidence on every platform, and runtime size
 is not the gated artifact (the bootstrap is). The
 `<package>.manifest.json` shard — the release manifest entry with the
-sidecars folded in — arrives with the publish increment; the skeleton
-emits exactly the sidecars it will fold.
+sidecars folded in — is derived by the tebako-release gem at publish
+time (spec 13 §2a's write-once per-leg metadata unit), never built
+here; the factory emits exactly the sidecars it folds.
 
 ## The flow
 
@@ -189,13 +196,14 @@ Both are consumed by pin (`versions.yml` sha256 / `contract.yml`
 
 ## Matrix grammar
 
-The env vocabulary lives in `.github/matrix.json` (one row today:
-linux-gnu x86_64 in the `tpkg-builder-x86_64-linux-gnu` container); the
+The env vocabulary lives in `.github/matrix.json` (five rows: linux-gnu
+x86_64, linux-musl x86_64 + arm64 in the digest-pinned tpkg-builder
+containers, macos x86_64 + arm64 runner-native); the
 version catalog lives in `contract.yml` (the SSOT) — versions, tags,
 and SHAs never appear in workflow YAML. The dispatch filters are
 `php_filter=full|tidy|catalog|<list>`, `platform=all|linux-gnu|…`,
 `arch_filter=all|x86_64|arm64` — the python factory's grammar, so the
-second platform's increment adds a matrix row, never a re-derivation.
+next platform's increment adds a matrix row, never a re-derivation.
 
 ## contract.yml — the pins
 
@@ -211,6 +219,13 @@ second platform's increment adds a matrix row, never a re-derivation.
 - `link_unit_release: "v2.8.66"` — the tamatebako/tebako release whose
   prebuilt link unit the legs consume (the v2.8 driver line plus the
   raw-syscall interposition pair, tebako#935/#937).
+- `macos_deployment_target: "14.0"` — the macOS support floor
+  (tebako-runtime-python#81's pin, same value): stamped into the exe's
+  LC_BUILD_VERSION minos via `MACOSX_DEPLOYMENT_TARGET`
+  (`PhpBuild#floor_env`) and asserted at the provenance gate.
+- `release_tooling: "v0.5.1"` — the tamatebako/tebako-release-tooling
+  tag the Gemfile pins (the publish/sign/audit machinery's single
+  owner; the factory's policy rides `scripts/release_adapter.rb`).
 - `php:` — the version catalog (`catalog` / `full` / `tidy` sets).
   The per-version **source pins** (url + sha256) live in
   `versions.yml`; `scripts/check_contract.rb` cross-locks the two (a
@@ -231,13 +246,19 @@ second platform's increment adds a matrix row, never a re-derivation.
   grammar / reads the pins (contract.yml is the SSOT).
 - `scripts/compute_matrix.rb` — the matrix engine: catalog × env
   vocabulary under the dispatch filters → the leg matrix (with
-  `host_id` and `link_unit_pid`).
+  `host_id` and `link_unit_pid`), plus the `--format env|phps` forms
+  the release job's expectations read.
+- `scripts/release_adapter.rb` — this factory's tebako-release
+  declaration (repo, language, the package-name grammar's version
+  capture) through the gem's adapter seam.
 - `tools/build_runtime` — the build entry point (fetch → verify →
   build → link → pack → package → sidecars).
-- `tools/boot_smoke` — the post-build acceptance gate (7 scenarios:
-  bare/boot/payload/bad-mount + the `TEBAKO_MOUNT_ROOT` override
-  trio). Needs `TEBAKO_TFS` (the tfs CLI, for the fixture images) and
-  the runtime-packages tree.
+- `tools/boot_smoke` — the post-build acceptance gate (8 scenarios:
+  bare/boot/payload/compute-floor/bad-mount + the `TEBAKO_MOUNT_ROOT`
+  override trio). Needs `TEBAKO_TFS` (the tfs CLI, for the fixture
+  images) and the runtime-packages tree.
+- `tools/registry_update.rb` — the registry render (spec 04 §2's
+  mirror): the release's `.manifest.json` shards → `tpkg-registry.yaml`.
 - `build/lib/tebako_php_builder/` — the build model (the
   tebako-runtime-python `build/lib` port): Contract, Platform,
   PhpVersion, SourceFetcher, LinkUnit, Mlibs, PhpBuild, ImageBuilder,
@@ -247,19 +268,28 @@ second platform's increment adds a matrix row, never a re-derivation.
 - `ci/check_symbol_provenance.sh` — the symbol-provenance gate: the
   exe defines `tebako_driver_boot` / `tebako_mount_point` /
   `tebako_driver_contract_version` / `main` / `php_cli_main`, and
-  `main` forwards to `tebako_driver_boot`.
-- `.github/workflows/build-linux-gnu.yml` — the skeleton's one build
-  leg (compute → preflight → build → verify).
+  `main` forwards to `tebako_driver_boot`; plus the dependency-closure
+  audits (ELF NEEDED under the glibc/musl allowlist; Mach-O dylibs
+  confined to `/usr/lib/` + `/System/Library/` with the minos floor).
+- `ci/macos-sign-notarize-runtime.sh` + `ci/runtime.entitlements` —
+  the spec 31 sign+notarize arm (Developer ID Application, hardened
+  runtime; gated on `APPLE_SIGNING_ENABLED`, inert without it).
+- `.github/workflows/_build-platform.yml` — the one per-platform
+  workflow (parity → compute → preflight → build → publish → verify),
+  called by the three thin triggers (`build-linux-gnu.yml`,
+  `build-linux-musl.yml`, `build-macos.yml`) and by `publish.yml` (the
+  release coordinator: per-leg publish+sign fan-out, the whole-matrix
+  audit, the registry render + bot PR).
 - `.github/workflows/lint.yml` — the static gate: schema validation,
   catalog/matrix resolution, the `ruby -c` sweep, YAML/JSON parse
   checks.
 
 ## Follow-ups
 
-1. The publish pipeline (release adapter + the tebako-release gem,
-   signing, the registry render).
-2. The second platform leg (linux-musl, then macos; windows needs the
-   spec 17 §7 materialize tier branches in the fs TU).
+1. The first release (the pipeline is dispatch-proven; cutting
+   `v0.1.0` is the owner's call, never the agent's).
+2. The windows leg (needs the spec 17 §7 materialize tier branches in
+   the fs TU).
 3. Extension breadth + the composer lane (see the extension-set
    section).
 4. The boot-contract parity suite (`spec/`) against the ruby driver's

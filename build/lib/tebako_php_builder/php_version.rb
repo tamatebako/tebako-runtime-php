@@ -35,7 +35,12 @@ module TebakoPhpBuilder
   class PhpVersion
     # The one owner of the line grammar (spec 00 §10): the schema's
     # catalog pattern mirrors it (asserted by the lint gate passing on
-    # the same strings) — nothing re-derives it.
+    # the same strings), and the tebako-release gem's package-filename
+    # parse interpolates LINE_GRAMMAR_SOURCE through this factory's
+    # adapter (scripts/release_adapter.rb) — nothing re-derives it.
+    # LINE_GRAMMAR_SOURCE stays anchor-free: the gem wraps it in its own
+    # \A…\z package-name pattern (uploader.rb's parse_package_filename).
+    LINE_GRAMMAR_SOURCE = '\d+\.\d+\.\d+'
     LINE_PATTERN = /\A(?<base>\d+\.\d+\.\d+)\z/.freeze
 
     def initialize(php_version)
@@ -55,7 +60,7 @@ module TebakoPhpBuilder
     # §2.2 — what native-extension payloads match their version constraint
     # against): the "8.4"-style line. (The exact PHP API version — the
     # Zend module API a compiled extension pins — rides the package's
-    # .abi facet, read from the built source's main/php_version.h.)
+    # .abi facet, read from the built source's Zend/zend_modules.h.)
     def abi_line
       major_minor.join(".")
     end

@@ -97,6 +97,13 @@ fi
 if [ -z "$(printf '%s\n' "$dis" | grep 'main>:' || true)" ] && command -v llvm-objdump >/dev/null 2>&1; then
   dis="$(llvm-objdump -d --disassemble-symbols=main "$EXE" 2>/dev/null || true)"
 fi
+if [ -z "$(printf '%s\n' "$dis" | grep 'main>:' || true)" ] && command -v otool >/dev/null 2>&1; then
+  # darwin last resort: /usr/bin/objdump is a deprecation shim and
+  # llvm-objdump sits behind xcrun (off PATH) — otool (cctools) is
+  # always there. Mach-O labels are bare `_symbol:` lines; take the body
+  # up to the next label (a tail call has no ret).
+  dis="$(otool -tV "$EXE" 2>/dev/null | awk '/^_main:/{f=1; next} f && /^[_a-zA-Z].*:$/{exit} f{print}' || true)"
+fi
 if [ -z "$dis" ]; then
   fail "no objdump could disassemble main in $EXE — the forwarding check cannot run"
 elif [ -n "$(printf '%s\n' "$dis" | grep tebako_driver_boot || true)" ]; then
@@ -104,6 +111,81 @@ elif [ -n "$(printf '%s\n' "$dis" | grep tebako_driver_boot || true)" ]; then
 else
   fail "main in $EXE does not reference tebako_driver_boot — php_cli.c's own main, not the fs TU (the Makefile substitution never landed)"
   echo "disassembly evidence:"; printf '%s\n' "$dis"
+fi
+
+# --- the exe's runtime library closure is system-only -------------------
+# The audience rule in executable form: a runtime must boot on a bare
+# target system, so its dynamic imports carry the platform's own
+# libraries and nothing else. tebako-runtime-python#76/#80 are the
+# reference defects (a musl exe NEEDing libintl.so.8; a macos exe loading
+# Homebrew's libintl.8.dylib — both dead on a bare system). An
+# unreadable/missing table is a failure, never a silent pass.
+if file_out="$(file "$EXE" 2>/dev/null)" && printf '%s' "$file_out" | grep -q ELF; then
+  # The same cascade as the disassembly above: readelf, then the llvm
+  # spelling; an ELF leg with neither is a harness gap, named as such.
+  needed=""
+  if command -v readelf >/dev/null 2>&1; then
+    needed="$(readelf -d "$EXE" 2>/dev/null | awk '/NEEDED/ { gsub(/[][]/, ""); print $NF }' || true)"
+  elif command -v llvm-readelf >/dev/null 2>&1; then
+    needed="$(llvm-readelf -d "$EXE" 2>/dev/null | awk '/NEEDED/ { gsub(/[][]/, ""); print $NF }' || true)"
+  else
+    fail "an ELF exe and no readelf/llvm-readelf to audit its NEEDED rows — the harness must carry binutils"
+  fi
+  if [ -z "$needed" ] && { command -v readelf >/dev/null 2>&1 || command -v llvm-readelf >/dev/null 2>&1; }; then
+    fail "the dynamic section of $EXE yielded no NEEDED rows (a static exe? the probe cannot run)"
+  fi
+  needed_failures_before=$failures
+  # The glibc family includes libresolv.so.2 (glibc's own resolver DSO —
+  # php's standard ext binds res_* for the dns_* functions; NOT folded
+  # into libc by the 2.34 merge, but shipped by the same libc6 package
+  # on every bare debian/ubuntu — system by construction, unlike
+  # python#76's gettext).
+  while IFS= read -r lib; do
+    [ -z "$lib" ] && continue
+    case "$lib" in
+      libc.musl-*.so.1 | ld-musl-*.so.1 | \
+      libc.so.6 | libm.so.6 | libdl.so.2 | librt.so.2 | libpthread.so.0 | \
+      libutil.so.1 | libresolv.so.2 | \
+      ld-linux-*.so.2 | ld-linux-*.so.1 | libgcc_s.so.1) : ;;
+      *) fail "$EXE NEEDs $lib — a runtime .so dependency a bare system cannot satisfy (the audience rule; tebako-runtime-python#76)" ;;
+    esac
+  done <<< "$needed"
+  [ -n "$needed" ] && [ "$failures" -eq "$needed_failures_before" ] && note "the exe's NEEDED set is system-only: $(printf '%s\n' "$needed" | tr '\n' ' ')"
+elif printf '%s' "$file_out" | grep -q 'Mach-O'; then
+  # The Mach-O spelling of the same gate: otool -L's dependency rows must
+  # be macOS's own dylibs and nothing else (the first output line is the
+  # exe's own header and is skipped). This arm pins the closure
+  # REGARDLESS of what configure finds on the build host (the python
+  # factory's macos-x86_64 libintl defect escaped arm64 only by an
+  # accident of the search path — not a shape to rely on).
+  if command -v otool >/dev/null 2>&1; then
+    needed="$(otool -L "$EXE" 2>/dev/null | awk 'NR > 1 { print $1 }' || true)"
+  else
+    fail "a Mach-O exe and no otool to audit its dylib rows — the harness must carry cctools"
+  fi
+  [ -z "$needed" ] && fail "otool -L on $EXE yielded no dylib rows (the probe cannot run)"
+  needed_failures_before=$failures
+  while IFS= read -r lib; do
+    [ -z "$lib" ] && continue
+    case "$lib" in
+      /usr/lib/* | /System/Library/*) : ;;
+      *) fail "$EXE loads $lib — a runtime dylib a bare macOS cannot satisfy (the audience rule; tebako-runtime-python#80)" ;;
+    esac
+  done <<< "$needed"
+  [ "$failures" -eq "$needed_failures_before" ] && note "the exe's dylib rows are system-only: $(printf '%s\n' "$needed" | tr '\n' ' ')"
+
+  # The support floor is a pinned product decision (contract.yml's
+  # macos_deployment_target), never the runner image's accident — the
+  # python factory's floor floated with the build host's OS and the Intel
+  # exe refused to load on macOS 14 (tebako-runtime-python#81). The
+  # recorded LC_BUILD_VERSION/LC_VERSION_MIN_MACOSX minos must BE the
+  # pin. The contract sits beside this script's ci/ directory.
+  floor=$(sed -n 's/^macos_deployment_target: *"\([^"]*\)".*/\1/p' "$(cd "$(dirname "$0")/.." && pwd)/contract.yml")
+  [ -z "$floor" ] && fail "contract.yml carries no macos_deployment_target pin — the floor cannot float (tebako-runtime-python#81)"
+  minos="$(otool -l "$EXE" 2>/dev/null | awk '/cmd LC_VERSION_MIN_MACOSX|cmd LC_BUILD_VERSION/ {found=1} found && /^    minos / {print $2; exit}' || true)"
+  [ -z "$minos" ] && fail "otool -l on $EXE yielded no minos record — a Mach-O without a support floor cannot be gated"
+  [ "$minos" = "$floor" ] || fail "$EXE records minos $minos but contract.yml pins $floor — the macOS floor floated with the runner image (tebako-runtime-python#81)"
+  note "the exe's recorded support floor is the pinned $floor"
 fi
 
 if [ "$failures" -gt 0 ]; then

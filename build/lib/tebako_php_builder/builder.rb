@@ -78,13 +78,14 @@ module TebakoPhpBuilder
       build = TebakoPhpBuilder::PhpBuild.new(platform: @platform, php_version: @php_version,
                                              prefix: @prefix, tarball: tarball, src_sha256: sha256,
                                              link_unit: link_unit, link_unit_dir: link_unit_dir,
-                                             repo_root: @repo_root, jobs: @jobs)
+                                             repo_root: @repo_root, jobs: @jobs,
+                                             macos_deployment_target: @contract.macos_deployment_target)
                                         .run
       finalize(build.exe_path)
       assemble_and_pack_image(build, sha256, link_unit, link_unit_dir, tfs)
       write_image_sidecar
       write_abi_sidecar(build)
-      write_contract_sidecar(tarball, sha256, link_unit)
+      write_contract_sidecar(tarball, sha256, link_unit, build)
       @output = output
       puts "-- Runtime package: #{output}"
       puts "-- Runtime env image: #{image_output}"
@@ -165,16 +166,21 @@ module TebakoPhpBuilder
 
     # The era-2 contract provenance (spec 18 C2) as
     # `<output>.contract.yaml`. built_from names the consumed tarball with
-    # its verified sha256 and the pin file that anchored it; the additive
-    # link_unit block names the consumed product release's unit and its
-    # API-declared digest (open parse — consumers that predate the key
-    # ignore it).
-    def write_contract_sidecar(tarball, sha256, link_unit)
+    # its verified sha256 and the pin file that anchored it, and records
+    # the compile flags the build ACTUALLY ran with (PhpBuild's Makefile
+    # read-back — the boot smoke's compute-floor flags arm reads them from
+    # this card, the only surface php has for them: the interpreter
+    # records no CFLAGS at runtime, unlike CPython's sysconfig); the
+    # additive link_unit block names the consumed product release's unit
+    # and its API-declared digest (open parse — consumers that predate the
+    # key ignore it).
+    def write_contract_sidecar(tarball, sha256, link_unit, build)
       card = CONTRACT_CARD.merge(
         "mount_root" => @platform.mount_root,
         "built_from" => {
           "pin" => "versions.yml",
-          "sources" => [{ "name" => File.basename(tarball), "sha256" => sha256 }]
+          "sources" => [{ "name" => File.basename(tarball), "sha256" => sha256 }],
+          "cflags" => build.recorded_cflags
         },
         "link_unit" => {
           "release" => @link_unit_release,
