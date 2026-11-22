@@ -37,11 +37,11 @@
  * (the layout pair check); a mounted image with no preload_shim grant ->
  * 78 (below: the interpreter would boot blind).
  *
- * Skeleton scope: linux (ELF) only. macOS (_NSGetExecutablePath /
- * DYLD_INSERT_LIBRARIES) and windows (the spec 17 §7 materialize tier —
- * there is no preload tier on windows) arrive with their legs; this TU
- * is written to grow those branches the way tebako-runtime-python's
- * tebako_python_main.c carries them.
+ * Scope: the POSIX legs (linux ELF + macOS — the preload-shim tier 1
+ * platforms). Windows (the spec 17 §7 materialize tier — there is no
+ * preload tier on windows) arrives with its leg; this TU is written to
+ * grow that branch the way tebako-runtime-python's tebako_python_main.c
+ * carries it.
  */
 
 /* glibc AND musl under -std=c11 (php's default cflags) hide
@@ -56,6 +56,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h> /* _NSGetExecutablePath */
+#endif
 
 /* The spec-17 driver ABI (tamatebako/tebako crates/tebako-driver ffi.rs). */
 extern int tebako_driver_boot(int *argc, char ***argv, const char *runtime_root);
@@ -75,9 +78,10 @@ static const char tebako_php_mount_root[] = "@MOUNT_ROOT@";
 /* The re-exec sentinel (the header comment). */
 #define TEBAKO_PHP_BOOTED "TEBAKO_PHP_BOOTED"
 
-/* The running executable's own path for the re-exec: /proc on linux
- * (the skeleton's only leg). argv[0] as the last resort when it carries
- * a path separator. A failure is a named error, never a PATH guess. */
+/* The running executable's own path for the re-exec: /proc on linux,
+ * _NSGetExecutablePath on macOS. argv[0] as the last resort elsewhere
+ * when it carries a path separator. A failure is a named error, never a
+ * PATH guess. */
 static int self_executable_path(char *buf, size_t cap, const char *argv0) {
 #if defined(__linux__)
     ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
@@ -85,6 +89,16 @@ static int self_executable_path(char *buf, size_t cap, const char *argv0) {
         return -1;
     buf[n] = '\0';
     return 0;
+#elif defined(__APPLE__)
+    /* _NSGetExecutablePath may return a symlink-laden spelling;
+     * realpath resolves it (and normalizes into buf). */
+    {
+        char raw[PATH_MAX];
+        uint32_t size = (uint32_t)sizeof raw;
+        if (_NSGetExecutablePath(raw, &size) != 0)
+            return -1;
+        return realpath(raw, buf) != NULL ? 0 : -1;
+    }
 #else
     (void)cap;
     if (strchr(argv0, '/') != NULL && realpath(argv0, buf) != NULL)

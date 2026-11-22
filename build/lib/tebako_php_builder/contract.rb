@@ -59,6 +59,19 @@ module TebakoPhpBuilder
       nonempty_pin("link_unit_release")
     end
 
+    # The macOS support floor for the macos legs (MACOSX_DEPLOYMENT_TARGET
+    # through PhpBuild#floor_env; asserted at the provenance gate).
+    def macos_deployment_target
+      nonempty_pin("macos_deployment_target")
+    end
+
+    # The tamatebako/tebako-release-tooling tag the Gemfile pins (read by
+    # the Gemfile itself; this reader exists so scripts can assert the pin
+    # without re-parsing YAML).
+    def release_tooling
+      nonempty_pin("release_tooling")
+    end
+
     def catalog
       sets = @data.fetch("php") do
         raise TebakoPhpBuilder::Error.new("#{@path} carries no php: catalog", 64)

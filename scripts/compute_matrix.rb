@@ -26,19 +26,20 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-# Compute the build-leg matrix for build-linux-gnu.yml: the php set
-# (resolved from contract.yml — the same read scripts/versions performs)
-# x the env vocabulary (.github/matrix.json — tebako-runtime-python's
-# grammar), sliced by the dispatch filters. Emits a GitHub Actions matrix
-# JSON document on stdout. Stdlib only.
+# Compute the build-leg matrix for _build-platform.yml / publish.yml: the
+# php set (resolved from contract.yml — the same read scripts/versions
+# performs) x the env vocabulary (.github/matrix.json — tebako-runtime-
+# python's grammar), sliced by the dispatch filters. Emits a GitHub
+# Actions matrix JSON document on stdout. Stdlib only.
 #
-# Skeleton scope: .github/matrix.json carries the ONE linux-gnu x86_64
-# row; the planner is the full grammar (every known os/arch validates),
-# so the next platform's increment adds a row, never a re-derivation.
-#
-# Usage: compute_matrix.rb (no options — the matrix document is the only
-# form; publish's env/php expectation forms arrive with the publish
-# increment)
+# Usage: compute_matrix.rb [--format matrix|env|phps]
+#   matrix  (default) the GHA matrix document {"include": [leg, ...]} —
+#           extra top-level keys are impossible (GHA would read them as
+#           matrix variables), so the other two forms exist
+#   env     the selected matrix.json rows as a JSON array (each + host_id)
+#           — the release job's EXPECTED_ENV_MATRIX
+#   phps    the selected php versions as a JSON array — the release job's
+#           EXPECTED_PHP_MATRIX
 #
 # Filters (env vars, mirroring the other factories' dispatch grammar):
 #   PHP_FILTER       full | tidy | catalog | comma-separated versions (default: full)
@@ -50,13 +51,24 @@
 #   host_id                   — this factory's package-name platform id
 #                               (Platform::HOST_IDS — the exe/image
 #                               grammar tebako-runtime-<ver>-php-<php>-<host_id>)
-#   container                 — the tpkg-builder image ref (runner-native
-#                               legs carry null — none in the skeleton)
+#   container                 — the tpkg-builder image ref with
+#                               contract.yml's container_version tag
+#                               applied, null for the runner-native legs
+#                               (macos — the documented tebako-ci-containers
+#                               exception)
 #   link_unit_pid             — the product release's platform id for the
 #                               link-unit asset name (Platform::LINK_UNIT_PIDS)
+#   sign_tool_host_id         — the in-leg sign step's tebako-pkg must
+#                               EXECUTE on the leg's runner, and musl legs
+#                               build inside the alpine container on a glibc
+#                               ubuntu host: a musl-linked tool cannot exec
+#                               there (its ELF interpreter is absent). The
+#                               tool's platform is the runner's, never the
+#                               artifact's.
 #
-# Named errors, exit 64: an unknown platform/arch filter or a matrix.json
-# row outside the known vocabulary is a config bug, never a skipped leg.
+# Named errors, exit 64: an unknown platform/arch filter, an unknown
+# --format, or a matrix.json row outside the known vocabulary is a config
+# bug, never a skipped leg.
 
 require "json"
 require "yaml"
@@ -75,6 +87,14 @@ ARCHES = %w[x86_64 arm64].freeze
 def usage_error(message)
   warn "compute_matrix: #{message}"
   exit 64
+end
+
+format = "matrix"
+if (idx = ARGV.index("--format"))
+  format = ARGV[idx + 1].to_s
+  usage_error "--format expects matrix | env | phps" unless %w[matrix env phps].include?(format)
+elsif !ARGV.empty?
+  usage_error "unknown argument(s): #{ARGV.join(', ')} (the only option is --format matrix|env|phps)"
 end
 
 contract = YAML.load_file(CONTRACT_YML)
@@ -111,6 +131,7 @@ end
 env = JSON.parse(File.read(MATRIX_JSON)).fetch("env")
 
 legs = []
+selected_env = []
 env.each do |row|
   os = row.fetch("os")
   arch = row.fetch("arch")
@@ -120,6 +141,7 @@ env.each do |row|
   next unless arch_filter == "all" || arch_filter == arch
 
   container = row["container"] && "#{row['container']}:#{container_version}"
+  env_admitted = false
   phps.each do |php|
     # The line grammar is validated at the contract gate; the planner
     # re-validates so a catalog drift fails HERE (exit 64), never mid-leg.
@@ -135,9 +157,22 @@ env.each do |row|
       host: row.fetch("host"),
       host_id: host_id,
       container: container,
-      link_unit_pid: link_unit_pid
+      link_unit_pid: link_unit_pid,
+      sign_tool_host_id: (os == "linux-musl" ? "linux-gnu-#{arch}" : host_id)
     }
+    # The env row joins the expectations only when the row EMITTED a leg:
+    # the audit reads EXPECTED_ENV_MATRIX x EXPECTED_PHP_MATRIX, so a
+    # gated row must not survive into env. matrix/env/phps all derive
+    # from the same filtered walk.
+    unless env_admitted
+      selected_env << row.merge("host_id" => host_id)
+      env_admitted = true
+    end
   end
 end
 
-puts JSON.generate({ include: legs })
+case format
+when "matrix" then puts JSON.generate({ include: legs })
+when "env" then puts JSON.generate(selected_env)
+when "phps" then puts JSON.generate(phps.select { |php| legs.any? { |leg| leg[:php] == php } })
+end

@@ -67,6 +67,10 @@ container_version: "v1"
 container_digests:
   tpkg-builder-x86_64-linux-gnu:
     amd64: "sha256:6ab7d71bcae6b93bcba4e5201835d7135ee99b29f72755d7f4bb8f48b398ae90"
+  tpkg-builder-x86_64-linux-musl:
+    amd64: "sha256:e933e07cc7320b53fd558a3ede20728530bb0b1fbcf8100efc55f5ac80b97e2d"
+  tpkg-builder-aarch64-linux-musl:
+    arm64: "sha256:f3686d19035400fc87310fc2d38842ed24d3cf56bc95611a2b9000bfcbdf4ccf"
 
 # The published link-unit pin: the tamatebako/tebako release whose
 # prebuilt link unit (the spec-17 driver + scoped tfs + the native
@@ -85,6 +89,21 @@ container_digests:
 # allocation, no loader lock), the fix whose absence wedged the gnu legs
 # at first intercepted call. Contract unchanged (2).
 link_unit_release: "v2.8.66"
+
+# The macOS support floor (tebako-runtime-python#81's pin, same value):
+# stamped into the exe's LC_BUILD_VERSION minos on the macos legs via
+# MACOSX_DEPLOYMENT_TARGET (PhpBuild#floor_env) and asserted at the
+# provenance gate (ci/check_symbol_provenance.sh's minos arm) — a product
+# decision, never the runner image's accident.
+macos_deployment_target: "14.0"
+
+# The release machinery pin: tamatebako/tebako-release-tooling is the
+# single owner of the publish/sign/audit machinery (ecosystem invariant
+# 10); the Gemfile reads THIS value (one contract edit bumps the pin,
+# never a second hand-written copy). The factory's identity + policy ride
+# scripts/release_adapter.rb — the repo carries no copy of the machinery.
+# v0.5.1 is tebako-runtime-python's proven pin.
+release_tooling: "v0.5.1"
 
 # The php version catalog this factory builds (and will publish, once the
 # publish increment lands). The SOURCE PINS (url/sha256 per version) live
