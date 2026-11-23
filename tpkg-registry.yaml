@@ -1,0 +1,46 @@
+# =============================================================================
+# tpkg-registry.yaml — the tebako-runtime-php runtime registry (spec 04 §2)
+#
+# OWNED BY tools/registry_update.rb — rendered from a release's per-package
+# .manifest.json shards by the publish workflow's release job and
+# landed on main by bot PR (spec 13 §2a). NEVER hand-edit: the one sanctioned
+# manual mark is `status: withdrawn` on a version entry (spec 04 §2 — release
+# assets are immutable, so withdrawal is the only remedy for a bad published
+# artifact), and the renderer preserves those marks across renders.
+#
+# kind: runtime entries carry NO entrypoints key (the registry validator:
+# only apps and toolkits declare entrypoints) and ALWAYS carry `engine`
+# (spec 04 §2 MINOR 1 — the edge-discovery key; an engine-less runtime
+# entry is invisible to `kind: runtime` edges) AND `implementation`
+# (spec 28 §8 — the flavor axis; an implementation-named edge sees only
+# entries carrying its key). Versions are the composite
+# `<php>-<tebako>` keys (one php ships on several tebako lines; the
+# composite keeps every line addressable).
+# =============================================================================
+schema_version: 1
+payloads:
+- name: php
+  kind: runtime
+  versions:
+  - version: 8.4.28-0.1.0
+    platforms:
+      aarch64-linux-musl:
+        artifact: tebako-runtime-0.1.0-php-8.4.28-linux-musl-arm64.tfs
+        sha256: ee0162702a9fd3bf9c37d77bae7d94f5d12db022d692e150b8ed01891b5811dd
+      aarch64-macos:
+        artifact: tebako-runtime-0.1.0-php-8.4.28-macos-arm64.tfs
+        sha256: 22f2e64ba662a4012a3b62c66b5ddd78afa0aca2d74b406daccc0a497882d847
+      x86_64-linux-gnu:
+        artifact: tebako-runtime-0.1.0-php-8.4.28-linux-gnu-x86_64.tfs
+        sha256: 8762a026ea91bf42f303c6c9fe1c240f73d8762774401c3e44918244c9040c87
+      x86_64-linux-musl:
+        artifact: tebako-runtime-0.1.0-php-8.4.28-linux-musl-x86_64.tfs
+        sha256: 81a7b9e4ecf0f9b3249a72fbbb97af862bdcb5f0067910aca3fbbe0147e93505
+      x86_64-macos:
+        artifact: tebako-runtime-0.1.0-php-8.4.28-macos-x86_64.tfs
+        sha256: 0647e7ed9a9994f963a3298d00d9ac3941ae24a45d3005af9dcae6cf8ca9e117
+    release:
+      ref: tfs:github:tamatebako/tebako-runtime-php:v0.1.0
+  engine: php
+  implementation: php
+  default: 8.4.28-0.1.0
