@@ -12,8 +12,8 @@
     grant covers the driver materializing in-image native extensions
     (.so) to the host for dlopen.
   allow-jit — a grant, never a requirement: this factory builds no JIT
-    (php's opcache — the only php JIT surface — is off under
-    --disable-all), so the entitlement is inert today; it rides the
+    (php's opcache — the only php JIT surface — is off under the
+    disable-all configure line), so the entitlement is inert today; it rides the
     pair so an opcache-enabled line never needs a profile re-review.
 
   Keep the two <true/> values on their own lines: the embedding check
