@@ -95,6 +95,16 @@ incarnations — tebako-runtime-python's exact model:
    serialized mount table in the child; the child skips the boot and
    runs `php_cli_main`, whose libc IO the shim now serves from the VFS.
 
+The macOS entitlement plane of that re-exec (tebako#1117): the
+hardened runtime strips `DYLD_INSERT_LIBRARIES` at launch unless the
+exe carries `com.apple.security.cs.allow-dyld-environment-variables`
+— so `ci/runtime.entitlements` carries it, and
+`ci/macos-sign-notarize-runtime.sh` asserts it embedded by key name
+(no runner can police the class at exec time: macOS 15's dyld
+tolerates the omission — how the published v0.1.0 pair shipped green
+without it — macOS 14 strips). The v0.1.0-on-darwin-23 A/B evidence
+is recorded in `docs/build-chain.md`.
+
 php needs no analog of `PYTHONHOME`: the interpreter's compiled-in
 paths (the configure `--prefix`, the default `include_path`) spell the
 baked mount root, and the shim serves the VFS at that path in the

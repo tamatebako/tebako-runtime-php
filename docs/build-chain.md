@@ -47,6 +47,31 @@ coordinator. Stages:
    image per step (the python factory's container grammar: the
    alpine-based musl image cannot host node actions, so the job-level
    `container:` form is out); the macos legs are runner-native.
+
+   The sign arm's entitlement profile (`ci/runtime.entitlements`)
+   carries **allow-dyld-environment-variables** — the load-bearing
+   grant (tebako#1117's php cell; the tebako-runtime-r#5 precedent).
+   The fs TU's second incarnation re-execs the exe with the
+   driver-armed `DYLD_INSERT_LIBRARIES` (the in-image preload shim is
+   the UNPATCHED interpreter's only VFS visibility), and the hardened
+   runtime strips every `DYLD_*` variable at launch without the grant
+   (macOS 14 — silently): the interpreter then runs shimless, every
+   in-image read fails, and an entry inside the mount dies "Could not
+   open input file" while `php -v` keeps answering. Proven on darwin-23
+   (macOS 14.1.1 arm64) against the **published v0.1.0 pair itself** —
+   its exe carries the hardened profile without the grant: the
+   re-exec'd incarnation shows no `DYLD_INSERT_LIBRARIES`,
+   `is_dir("/__tfs__")` answers false through the interpreter's own
+   libc, a pressed payload's in-image entry dies "Could not open input
+   file"; the same published exe re-signed adding ONLY this grant runs
+   the identical probe green (`php-census-ok` + the in-image data
+   reads). The macos-15 runners' dyld TOLERATES the omission, which is
+   exactly how v0.1.0 shipped green through the boot smoke's
+   shim-service scenario (`boot`'s layout-card read through the
+   interpreter) — so the sign script asserts the embedded profile
+   statically, three `<true/>` values AND each key by name. A macos-14
+   acceptance canary leg (tebako-runtime-r's publish-leg shape) is the
+   named follow-up; the smoke probe it would run already exists.
 5. **publish** — only when the caller asked (`publish: true`): the leg
    that built a package publishes it and signs its served names from its
    OWN job (spec 13 §2a's de-rendezvous; the tebako-release gem's
