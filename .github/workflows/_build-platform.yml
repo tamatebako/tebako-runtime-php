@@ -385,13 +385,17 @@ jobs:
         run: tools/build_runtime --php "${{ matrix.php }}"
 
       # Spec 31 §5/§8.4: sign (Developer ID Application, hardened
-      # runtime, the ci/runtime.entitlements pair) + notarize the macOS
+      # runtime, the ci/runtime.entitlements set) + notarize the macOS
       # runtime exe IN-LEG, before the symbol-provenance check and the
       # boot smoke — every downstream gate, and the publish stage's
       # .sha256 sidecar, anchors the exact SIGNED bytes (sign-then-hash
       # is mandatory). Gated on the repo variable APPLE_SIGNING_ENABLED
       # (unsigned stays first-class without it — spec 00 invariant 7;
-      # armed + a missing secret is a fast named failure).
+      # armed + a missing secret is a fast named failure). The
+      # entitlement enumeration lives in ci/runtime.entitlements,
+      # asserted by key name in ci/macos-sign-notarize-runtime.sh —
+      # never re-spelled here (the v0.1.0 lesson: a wrong-keyed
+      # profile ships green on macos-15 and dies on macOS 14).
       - name: Sign + notarize the runtime exe (macos, spec 31)
         if: matrix.os == 'macos'
         shell: bash

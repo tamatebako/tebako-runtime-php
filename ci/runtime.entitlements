@@ -1,27 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Spec 31 §3/§5: the macOS runtime signing profile (fixed pair, pinned
+  Spec 31 §3/§5: the macOS runtime signing profile (fixed set, pinned
   here until spec 31 §2's manifest derivation lands).
 
+  allow-dyld-environment-variables — THE LOAD-BEARING GRANT
+    (tebako#1117; the tebako-runtime-r#5 precedent). The spec 22
+    tier-1 visibility design re-execs the exe with the driver-armed
+    DYLD_INSERT_LIBRARIES (build/resources/tebako_php_main.c's
+    second incarnation — the in-image libtfs_preload.dylib is the
+    UNPATCHED php interpreter's only VFS visibility). The hardened
+    runtime strips every DYLD_* variable at launch unless this grant
+    is present; the re-exec'd incarnation then runs shimless, the
+    mount root (/__tfs__) does not exist on the host filesystem, and
+    every in-image read fails — an entry script dies "Could not open
+    input file" while `php -v` keeps answering (the version fast
+    path never touches the image) — the exact tebako-runtime-r#5
+    symptom class, one interpreter over. Proven on darwin-23
+    (macOS 14.1.1 arm64) against the PUBLISHED v0.1.0 pair itself:
+    its exe carries this hardened profile without the grant, the
+    re-exec'd incarnation shows no DYLD_INSERT_LIBRARIES, the
+    mounted env image is invisible to the interpreter
+    (is_dir("/__tfs__") false), and a payload entry inside the
+    mount dies "Could not open input file"; the same published exe
+    re-signed adding ONLY this grant runs the same probe green.
+    The macos-15 runners TOLERATE a missing grant (their dyld keeps
+    the variables — how v0.1.0 shipped green), so no CI runner can
+    police this class at exec time: ci/macos-sign-notarize-runtime.sh
+    asserts the embedded profile statically, by key name.
   disable-library-validation — EVERY runtime slice: a hardened-runtime
-    process by default refuses unsigned dylibs, and the driver's boot
-    arms DYLD_INSERT_LIBRARIES with the in-image preload shim (spec 22
-    tier 1 — the unpatched php interpreter's only VFS visibility); the
-    shim carries no Developer ID signature of its own (§1.4). The same
-    grant covers the driver materializing in-image native extensions
-    (.so) to the host for dlopen.
+    process by default refuses unsigned dylibs, and the driver
+    materializes in-image native objects (the preload shim, .so
+    extensions) to the host for dlopen; they carry no Developer ID
+    signature of their own (§1.4). This grant governs only WHICH
+    dylibs may load — it says nothing about WHETHER dyld honors the
+    environment; only the grant above does (the two-key profile's
+    comment conflated the two, which is how v0.1.0 shipped signed
+    WITHOUT the load-bearing grant).
   allow-jit — a grant, never a requirement: this factory builds no JIT
     (php's opcache — the only php JIT surface — is off under the
-    disable-all configure line), so the entitlement is inert today; it rides the
-    pair so an opcache-enabled line never needs a profile re-review.
+    disable-all configure line), so the entitlement is inert today;
+    it rides the profile so an opcache-enabled line never needs a
+    profile re-review.
 
-  Keep the two <true/> values on their own lines: the embedding check
-  in ci/macos-sign-notarize-runtime.sh counts them (macOS 15 emits the
-  embedded plist single-line, so it greps for <true/>, not key names).
+  Keep each <true/> on its own line: the embedding check in
+  ci/macos-sign-notarize-runtime.sh counts them AND greps each key
+  name (macOS 15 emits the embedded plist single-line).
 -->
 <plist version="1.0">
 <dict>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
   <key>com.apple.security.cs.allow-jit</key>
